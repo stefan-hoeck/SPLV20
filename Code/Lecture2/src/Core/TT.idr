@@ -67,6 +67,34 @@ public export
 data Var : List Name -> Type where
      MkVar : {i : Nat} -> (0 p : IsVar n i vars) -> Var vars
 
+weakenVar :  (outer : List Name)
+          -> Var (outer ++ inner)
+          -> Var (outer ++ n :: inner)
+weakenVar [] (MkVar p) = MkVar (Later p)
+weakenVar (x :: xs) (MkVar {i = 0} First) = MkVar First
+weakenVar (x :: xs) (MkVar {i = (S k)} (Later p)) =
+  let MkVar p2 = weakenVar xs (MkVar p) in MkVar (Later p2)
+
+contractVar :  (outer : List Name)
+            -> Var (outer ++ v :: inner)
+            -> Maybe $ Var (outer ++ inner)
+contractVar [] (MkVar {i = 0} p)             = Nothing
+contractVar [] (MkVar {i = (S k)} (Later p)) = Just $ MkVar p
+contractVar (_ :: _) (MkVar {i = 0} First) = Just $ MkVar First
+contractVar (y :: xs) (MkVar {i = (S k)} (Later p)) = 
+  case contractVar xs (MkVar p) of
+    Nothing           => Nothing
+    (Just $ MkVar p2) => Just $ MkVar (Later p2)
+
+appendNilNeutral : (as : List a) -> as ++ [] = as
+appendNilNeutral [] = Refl
+appendNilNeutral (x :: xs) = cong (x ::) $ appendNilNeutral xs
+
+
+embedIsVar : IsVar n i ns -> IsVar n i (ns ++ more)
+embedIsVar First = First
+embedIsVar (Later x) = Later (embedIsVar x)
+
 public export
 data PiInfo : Type where
      Implicit : PiInfo
@@ -87,6 +115,14 @@ Functor Binder where
   map func (PVar ty) = PVar (func ty)
   map func (PVTy ty) = PVTy (func ty)
 
+export
+Foldable Binder where
+  foldr f acc b = ?foldrImpl
+
+export
+Traversable Binder where
+  traverse f b = ?travImpl
+
 public export
 data Term : List Name -> Type where
      Local : (idx : Nat) -> -- de Bruijn index
@@ -104,14 +140,53 @@ data Term : List Name -> Type where
 
 -- Term manipulation
 
-export
-weaken : Term vars -> Term (x :: vars)
+weakenInner : {outer : _} -> Term (outer ++ inner) -> Term (outer ++ n :: inner)
+weakenInner (Local idx p) =
+  let MkVar {i} p2 = weakenVar outer (MkVar p) in Local i p2
+weakenInner (Ref y z)     = Ref y z
+weakenInner (Meta y xs)   = Meta y $ map weakenInner xs
+weakenInner (Bind y z scope) =
+  Bind y (map weakenInner z) (weakenInner {outer = y :: outer} scope)
+weakenInner (App y z) = App (weakenInner y) (weakenInner z)
+weakenInner TType  = TType
+weakenInner Erased = Erased
 
 export
+weaken : Term vars -> Term (x :: vars)
+weaken = weakenInner {outer = []}
+
+-- this is just the identity function
+export
 embed : Term vars -> Term (vars ++ more)
+embed (Local idx p) = Local idx $ embedIsVar p
+embed (Ref x y) = Ref x y
+embed (Meta x xs) = Meta x $ map embed xs
+embed (Bind x y scope) = Bind x (map embed y) (embed scope)
+embed (App x y) = App (embed x) (embed y)
+embed TType = TType
+embed Erased = Erased
+
+contractInner : {outer : _}
+              -> Term (outer ++ v :: inner)
+              -> Maybe $ Term (outer ++ inner)
+contractInner (Local idx p) =
+  case contractVar outer (MkVar p) of
+    Nothing              => Nothing
+    (Just $ MkVar {i} x) => Just $ Local i x
+contractInner (Ref x y) = Just $ Ref x y
+contractInner (Meta x xs) =
+  Meta x <$> traverse contractInner xs
+contractInner (Bind x y scope) = do
+  y2 <- traverse contractInner y
+  s2 <- contractInner {outer = x :: outer} scope
+  pure $ Bind x y2 s2
+contractInner (App x y) = [| App (contractInner x) (contractInner y) |]
+contractInner TType = Just TType
+contractInner Erased = Just Erased
 
 export
 contract : Term (x :: vars) -> Maybe (Term vars)
+contract = contractInner {outer = []}
 
 export
 subst : Term vars -> Term (x :: vars) -> Term vars
