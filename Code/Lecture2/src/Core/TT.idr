@@ -62,6 +62,8 @@ data IsVar : Name -> Nat -> List Name -> Type where
 public export
 dropVar : (ns : List Name) -> {idx : Nat} ->
           (0 p : IsVar name idx ns) -> List Name
+dropVar (_ :: ns) {idx = 0} First = ns
+dropVar (_ :: ns) {idx = (S k)} (Later p) = dropVar ns p
 
 public export
 data Var : List Name -> Type where
@@ -187,6 +189,24 @@ contractInner Erased = Just Erased
 export
 contract : Term (x :: vars) -> Maybe (Term vars)
 contract = contractInner {outer = []}
+
+export
+substInner :  {outer : _}
+           -> Term (outer ++ vars)
+           -> Term (outer ++ x :: vars)
+           -> Term (outer ++ vars)
+substInner t (Local idx p) =
+  case contractVar outer (MkVar p) of
+    Just $ MkVar {i} x => Local i x
+    Nothing            => t
+substInner t (Ref z w) = Ref z w
+substInner t (Meta z xs) = Meta z $ map (substInner t) xs
+substInner t (Bind z w scope) =
+  Bind z (map (substInner t) w)
+    (substInner {outer = z :: outer} (weaken t) scope)
+substInner t (App z w) = App (substInner t z) (substInner t w)
+substInner t TType = TType
+substInner t Erased = TType
 
 export
 subst : Term vars -> Term (x :: vars) -> Term vars
